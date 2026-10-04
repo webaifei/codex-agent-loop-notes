@@ -101,7 +101,8 @@ footer a{color:var(--accent)}
 <a href="#ch2" data-target="ch2"><span class="num">02</span>输入的两种来源</a>
 <a href="#ch3" data-target="ch3"><span class="num">03</span>重试之前先分类</a>
 <a href="#ch4" data-target="ch4"><span class="num">04</span>取消怎么传播</a>
-<a href="#ch5" data-target="ch5"><span class="num">05</span>事件流不是分片的答案</a></nav>
+<a href="#ch5" data-target="ch5"><span class="num">05</span>事件流不是分片的答案</a>
+<a href="#ch6" data-target="ch6"><span class="num">06</span>让模型写程序调工具</a></nav>
   <div class="sidebar-foot">
     <a href="https://github.com/webaifei/codex-agent-loop-notes">源码仓库</a><br>
     对照 <a href="https://github.com/openai/codex">openai/codex</a>
@@ -114,8 +115,8 @@ footer a{color:var(--accent)}
     <h1>Codex 的 agent loop<br>就是三层 loop 加一个布尔</h1>
     <p>OpenAI 的 Codex 在 <code>codex-rs/</code> 下有 150 个 crate。但驱动它干活的，是三层嵌套的 <code>loop</code>，和一个叫 <code>needs_follow_up</code> 的布尔值。 这个仓库把那个骨架从 Rust 翻译成 Node.js 写了一遍——五个文件，每个都能 <code>node</code> 直接跑，输出会打印出和 Codex 源码一样的控制流。</p>
     <div class="stats">
-      <span><b>5</b> 章</span>
-      <span><b>6</b> 个可运行文件</span>
+      <span><b>6</b> 章</span>
+      <span><b>7</b> 个可运行文件</span>
       <span>对照 <b>codex-rs</b> · Rust</span>
     </div>
     <div class="loops">
@@ -446,6 +447,100 @@ footer a{color:var(--accent)}
 <p><strong>先信事实，再信声明，都没有才走兜底。</strong></p>
 <hr>
 <p>下次再看到&quot;流式响应&quot;，先问一句：这条流里除了答案还在传什么？那些不构成答案的事件，往往才是这个系统真正在意的状态。</p>
+
+</section>
+
+<section id="ch6" class="chapter">
+  <div class="chapter-head">
+    <span class="chapter-index">06</span>
+    <h2>让模型写程序调工具</h2>
+  </div>
+  <blockquote>
+<p><strong>代码</strong>：<code>code/step7.mjs</code><br><strong>对照</strong>：<code>codex-rs/code-mode-protocol/src/runtime.rs</code>（协议）、<code>codex-rs/code-mode-runtime/src/v8_init.rs</code>（V8 执行）</p>
+</blockquote>
+<h2>我原以为工具调用只能一次一个</h2>
+<p>模型说&quot;我要调 grep&quot;，你执行，把结果给它；它再说&quot;我要读那个文件&quot;，你执行，再把结果给它。</p>
+<p>这是最直观的做法，也是 Codex 和 DeepSeek Harness 都支持的默认模式。</p>
+<p>但它有个成本问题：<strong>每一次工具调用都要一次完整的模型往返。</strong> 找一处用法、读那个文件、数行数——三个工具调用就是三轮模型请求。</p>
+<p>而这三步之间有依赖关系，模型必须看到上一步的结果才能决定下一步，所以合并成一次并行调用也不行。</p>
+<h2>换个思路：让模型写程序</h2>
+<p>模型不是会写代码吗。</p>
+<p>那就不给它三个工具，给它<strong>一个能调用这三个工具的程序</strong>：</p>
+<figure class="code"><figcaption>js</figcaption><pre class="shiki vitesse-dark" style="background-color:#121212;color:#dbd7caee" tabindex="0"><code><span class="line"><span style="color:#CB7676">const</span><span style="color:#BD976A"> hits</span><span style="color:#666666"> =</span><span style="color:#4D9375"> await</span><span style="color:#BD976A"> tools</span><span style="color:#666666">.</span><span style="color:#80A665">grep</span><span style="color:#666666">({</span><span style="color:#B8A965"> pattern</span><span style="color:#666666">:</span><span style="color:#C98A7D77"> '</span><span style="color:#C98A7D">parseDate</span><span style="color:#C98A7D77">'</span><span style="color:#666666"> })</span></span>
+<span class="line"><span style="color:#CB7676">const</span><span style="color:#BD976A"> file</span><span style="color:#666666"> =</span><span style="color:#4D9375"> await</span><span style="color:#BD976A"> tools</span><span style="color:#666666">.</span><span style="color:#80A665">read_file</span><span style="color:#666666">({</span><span style="color:#B8A965"> path</span><span style="color:#666666">:</span><span style="color:#BD976A"> hits</span><span style="color:#666666">.</span><span style="color:#BD976A">matches</span><span style="color:#666666">[</span><span style="color:#4C9A91">0</span><span style="color:#666666">]</span><span style="color:#666666"> })</span></span>
+<span class="line"><span style="color:#4D9375">return</span><span style="color:#BD976A"> file</span><span style="color:#666666">.</span><span style="color:#BD976A">lines</span></span></code></pre></figure><p>一段程序，一次往返，三步全做完。</p>
+<p><strong>与其教会模型用工具，不如让它写程序。</strong> 前者要教 N 遍（每个工具的 schema、参数、什么时候用），后者它已经会了。</p>
+<p><code>code/step7.mjs</code> 把两种模式的区别摆在协议层：</p>
+<figure class="code"><figcaption>sh</figcaption><pre class="shiki vitesse-dark" style="background-color:#121212;color:#dbd7caee" tabindex="0"><code><span class="line"><span style="color:#80A665">node</span><span style="color:#C98A7D"> code/step7.mjs</span></span></code></pre></figure><figure class="code"><figcaption>text</figcaption><pre class="shiki vitesse-dark" style="background-color:#121212;color:#dbd7caee" tabindex="0"><code><span class="line"><span>    execute { tool_call_id: call_a, enabled_tools: ["grep","read_file"], yield_time_ms: 500 }</span></span>
+<span class="line"><span>          [程序] 调用 grep({"pattern":"parseDate"}) → call_1</span></span>
+<span class="line"><span>          [程序] 找到 2 处</span></span>
+<span class="line"><span>  结果：Completed  value=2</span></span></code></pre></figure><p>注意 <code>ExecuteRequest</code> 的形状：<strong>模型发的是 <code>source</code>（程序源码），不是 tool call。</strong> 同时附带 <code>enabled_tools</code>——宿主告诉运行时段代码里能调用哪些工具。</p>
+<h2>程序会跑很久，所以 cell 要能挂起</h2>
+<p>上面这段程序运气好，几十毫秒跑完了。但如果 <code>read_file</code> 卡了十秒呢？总不能把整轮对话堵死。</p>
+<p>Codex 的答案是 <strong>cell 可以挂起</strong>。协议里有三个动词：</p>
+<figure class="code"><figcaption>text</figcaption><pre class="shiki vitesse-dark" style="background-color:#121212;color:#dbd7caee" tabindex="0"><code><span class="line"><span>ExecuteRequest  { tool_call_id, enabled_tools, source, yield_time_ms, max_output_tokens }</span></span>
+<span class="line"><span>WaitRequest     { cell_id, yield_time_ms }</span></span></code></pre></figure><p><code>execute</code> 会一直等，直到 <code>yield_time_ms</code> 用完。程序还没跑完，就返回一个 <code>Pending</code>：</p>
+<figure class="code"><figcaption>text</figcaption><pre class="shiki vitesse-dark" style="background-color:#121212;color:#dbd7caee" tabindex="0"><code><span class="line"><span>  结果：Pending  pending_tool_call_ids=["call_3"]</span></span>
+<span class="line"><span>  → 宿主可以把控制权交回给模型，也可以继续等</span></span>
+<span class="line"><span>    wait { cell_id: cell_1, yield_time_ms: 500 }</span></span>
+<span class="line"><span>          [程序] 这个文件 42 行</span></span>
+<span class="line"><span>  最终：Completed  value=42</span></span></code></pre></figure><p><code>pending_tool_call_ids</code> 这个字段是关键：<strong>它不是&quot;程序还没跑完&quot;，而是&quot;程序正卡在 call_3 这个调用上&quot;。</strong></p>
+<p>宿主拿到这个信息后有两个选择——把控制权交回给模型（让模型决定要不要等），或者自己继续 <code>wait</code> 同一个 cell。<strong>挂起的是 cell，不是对话。</strong></p>
+<p>这在架构上的意义：一段正在跑的程序，变成了一个可寻址、可恢复的对象。它有 id（<code>cell_id</code>），有状态（pending 哪些调用），可以被别的环节查询和续跑。</p>
+<h2>另一种答案：一次跑完</h2>
+<p>DeepSeek Harness 的 PTC 解决同一个问题，但选了另一条路：<strong>程序一次跑完，不挂起。</strong></p>
+<p>工具通过一个全局命名空间暴露（<code>tools.grep(...)</code>），是普通的 async 调用，runtime 负责把调用桥接到宿主。程序要么跑完，要么失败。失败不是抛异常，而是结果里的一个字段：</p>
+<figure class="code"><figcaption>text</figcaption><pre class="shiki vitesse-dark" style="background-color:#121212;color:#dbd7caee" tabindex="0"><code><span class="line"><span>PtcRunFailure.kind:</span></span>
+<span class="line"><span>  'exception' | 'timeout' | 'abort' | 'worker-exit'</span></span>
+<span class="line"><span>  'invalid-output' | 'output-limit' | 'protocol' | 'sandbox-unavailable'</span></span></code></pre></figure><p>而且它明确写着：<strong>每次运行都不会保留之前程序的状态。</strong> 要共享状态得靠别的机制，不能指望上一段程序留下的变量。</p>
+<h2>两种答案，在权衡什么</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Codex code mode</th>
+<th>DSH PTC</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>执行环境</td>
+<td>内嵌 V8</td>
+<td>独立 Node / CPython 进程</td>
+</tr>
+<tr>
+<td>生命周期</td>
+<td>可挂起、可恢复（<code>cell_id</code>）</td>
+<td>一次跑完</td>
+</tr>
+<tr>
+<td>中间状态</td>
+<td>保留在 cell 里</td>
+<td>不保留</td>
+</tr>
+<tr>
+<td>隔离方式</td>
+<td>同进程 V8 隔离</td>
+<td>进程级 + 沙箱策略</td>
+</tr>
+<tr>
+<td>引擎启动</td>
+<td>快</td>
+<td>慢（要起进程）</td>
+</tr>
+</tbody></table>
+<p><strong>Codex 换来的是&quot;程序可以等&quot;。</strong> V8 在同一个进程里，启动几乎免费，所以可以随时起一个 cell、挂起、恢复。</p>
+<p><strong>DSH 换来的是&quot;程序跑在真正的隔离里&quot;。</strong> 独立进程能用操作系统的沙箱（Landlock、Seatbelt），代价是每次运行要起一个新进程——所以它干脆不保留状态。</p>
+<p>这不是谁更先进的问题，是<strong>两个不同的约束推出来的两个不同的解</strong>：一个优先&quot;交互的连续性&quot;，一个优先&quot;隔离的强度&quot;。</p>
+<h2>还有第三种可能</h2>
+<p>这两个系统还有一个共同的做法值得注意：<strong>在 code mode 下，其他工具不再是模型可以直接调的。</strong></p>
+<p>Codex 通过 <code>enabled_tools</code> 声明代码里能用什么。DSH 更狠，直接告诉模型：</p>
+<blockquote>
+<p><code>run_code</code> 是唯一你能直接调用的工具——指名任何其他工具的调用都会失败。所有工具都要从程序里面调用。</p>
+</blockquote>
+<p>一旦模型只能调一个工具，<strong>工具 schema 就不再占用上下文</strong>了。原本要写进提示词的 N 个工具定义，现在只写进那段生成出来的 SDK 类型声明里。</p>
+<p>省下的上下文，可以放别的东西。</p>
+<hr>
+<p>下次再看到&quot;给模型加个工具&quot;，先问一句：这个工具是给模型直接调的，还是给模型写的程序调的？答案不同，上下文成本差一个数量级。</p>
 
 </section></article>
 </main>

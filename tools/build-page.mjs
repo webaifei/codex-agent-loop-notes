@@ -190,8 +190,8 @@ footer a{color:var(--accent)}
     <h1>Codex 的 agent loop<br>就是三层 loop 加一个布尔</h1>
     <p>${lede}</p>
     <div class="stats">
-      <span><b>5</b> 章</span>
-      <span><b>6</b> 个可运行文件</span>
+      <span><b>6</b> 章</span>
+      <span><b>7</b> 个可运行文件</span>
       <span>对照 <b>codex-rs</b> · Rust</span>
     </div>
     <div class="loops">
