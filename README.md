@@ -40,6 +40,7 @@ node code/step1.mjs
 | [二、输入的两种来源](ch02-输入的两种来源.md) | `step3` | 用户插话 vs agent 来信；"延迟到下一轮"和"接受进当前轮" |
 | [三、重试之前先分类](ch03-重试之前先分类.md) | `step4` | 哪两类错误重试没有意义 |
 | [四、取消怎么传播](ch04-取消怎么传播.md) | `step5` | `child_token()`：取消自动向下传，不用满地的全局标志位 |
+| [五、事件流不是分片的答案](ch05-事件流不是分片的答案.md) | `step6` | `ResponseEvent` 里除了文本还在传什么；`end_turn` 缺失时的兜底 |
 
 对照的是 [openai/codex](https://github.com/openai/codex)。每章开头都标了对应的文件和行号。
 

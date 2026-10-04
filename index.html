@@ -100,7 +100,8 @@ footer a{color:var(--accent)}
   <nav><a href="#ch1" data-target="ch1"><span class="num">01</span>三层 loop</a>
 <a href="#ch2" data-target="ch2"><span class="num">02</span>输入的两种来源</a>
 <a href="#ch3" data-target="ch3"><span class="num">03</span>重试之前先分类</a>
-<a href="#ch4" data-target="ch4"><span class="num">04</span>取消怎么传播</a></nav>
+<a href="#ch4" data-target="ch4"><span class="num">04</span>取消怎么传播</a>
+<a href="#ch5" data-target="ch5"><span class="num">05</span>事件流不是分片的答案</a></nav>
   <div class="sidebar-foot">
     <a href="https://github.com/webaifei/codex-agent-loop-notes">源码仓库</a><br>
     对照 <a href="https://github.com/openai/codex">openai/codex</a>
@@ -113,8 +114,8 @@ footer a{color:var(--accent)}
     <h1>Codex 的 agent loop<br>就是三层 loop 加一个布尔</h1>
     <p>OpenAI 的 Codex 在 <code>codex-rs/</code> 下有 150 个 crate。但驱动它干活的，是三层嵌套的 <code>loop</code>，和一个叫 <code>needs_follow_up</code> 的布尔值。 这个仓库把那个骨架从 Rust 翻译成 Node.js 写了一遍——五个文件，每个都能 <code>node</code> 直接跑，输出会打印出和 Codex 源码一样的控制流。</p>
     <div class="stats">
-      <span><b>4</b> 章</span>
-      <span><b>5</b> 个可运行文件</span>
+      <span><b>5</b> 章</span>
+      <span><b>6</b> 个可运行文件</span>
       <span>对照 <b>codex-rs</b> · Rust</span>
     </div>
     <div class="loops">
@@ -361,6 +362,90 @@ footer a{color:var(--accent)}
 <p>不过这个&quot;偷懒&quot;本身有教学价值：<strong>父子传播的语义是核心，遍历还是原子操作是实现细节。</strong> 看懂前者，换任何语言都能重新实现。</p>
 <hr>
 <p>下次设计任何&quot;用户可以中途叫停&quot;的东西，别从标志位开始。先问一句：<strong>这件事有哪些层次，取消应该从哪一层往下传？</strong></p>
+
+</section>
+
+<section id="ch5" class="chapter">
+  <div class="chapter-head">
+    <span class="chapter-index">05</span>
+    <h2>事件流不是分片的答案</h2>
+  </div>
+  <blockquote>
+<p><strong>代码</strong>：<code>code/step6.mjs</code><br><strong>对照</strong>：<code>codex-rs/codex-api/src/common.rs</code> 的 <code>enum ResponseEvent</code>、<code>turn.rs:2658</code>（消费循环）、<code>turn.rs:2967</code>（<code>Completed</code> 分支）</p>
+</blockquote>
+<h2>我原以为流式就是把答案分几次发过来</h2>
+<p>一句话切成三块，客户端拼起来——这是 fetch 加 SSE 给人的直觉印象。</p>
+<p>所以我第一次看到 <code>ResponseEvent</code> 有十几个变体的时候，以为只是厂商话多。</p>
+<p>不是。<strong>它传的不是&quot;答案的碎片&quot;，是&quot;正在发生的事&quot;。</strong></p>
+<h2>事件流里有几类东西</h2>
+<p>Codex 的 <code>ResponseEvent</code> 里，除了文本还有：</p>
+<figure class="code"><figcaption>text</figcaption><pre class="shiki vitesse-dark" style="background-color:#121212;color:#dbd7caee" tabindex="0"><code><span class="line"><span>OutputTextDelta(String)              模型正在说的字</span></span>
+<span class="line"><span>ToolCallInputDelta { item_id, delta } 工具参数正在拼的片段</span></span>
+<span class="line"><span>ReasoningSummaryDelta { ... }        推理摘要</span></span>
+<span class="line"><span>ReasoningContentDelta { ... }        推理正文</span></span>
+<span class="line"><span>RateLimits(...)                      限流状态</span></span>
+<span class="line"><span>ServerModel(String)                  服务端实际用的模型</span></span>
+<span class="line"><span>Completed { end_turn, token_usage }  这次回答结束了</span></span></code></pre></figure><p>注意最后那几类——<strong>它们跟&quot;答案&quot;没关系</strong>。</p>
+<p><code>RateLimits</code> 是配额，<code>ServerModel</code> 是路由信息（服务端可能把你请求的模型换成另一个），<code>ReasoningContentDelta</code> 是模型的思考过程。这些都不进最终消息，但都必须在流里传，因为<strong>只有流经过的地方才知道这些事</strong>。</p>
+<p><strong>事件流不是分片的答案，是正在发生的事。</strong> 答案只是其中一类事件攒出来的结果。</p>
+<h2>攒的过程</h2>
+<p><code>code/step6.mjs</code> 把三种事件的处理都打出来了：</p>
+<figure class="code"><figcaption>sh</figcaption><pre class="shiki vitesse-dark" style="background-color:#121212;color:#dbd7caee" tabindex="0"><code><span class="line"><span style="color:#80A665">node</span><span style="color:#C98A7D"> code/step6.mjs</span></span></code></pre></figure><figure class="code"><figcaption>text</figcaption><pre class="shiki vitesse-dark" style="background-color:#121212;color:#dbd7caee" tabindex="0"><code><span class="line"><span>      事件 OutputTextDelta     "parseDate "</span></span>
+<span class="line"><span>      事件 OutputTextDelta     "用了本地时区，"</span></span>
+<span class="line"><span>      事件 OutputTextDelta     "改成 UTC 解析即可。"</span></span>
+<span class="line"><span>      事件 OutputItemDone      消息：parseDate 用了本地时区，改成 UTC 解析即可。</span></span></code></pre></figure><p>文本是一点点攒的，但<strong>消息只在一处产生</strong>——<code>OutputItemDone</code>。中间那些 delta 是给界面看的，最终那条消息由 <code>Done</code> 事件携带的完整 item 决定。</p>
+<p>这和 DeepSeek Harness 的 <code>block-end</code> 是同一个设计：<strong>delta 用于渲染，完整的 item 用于记账。</strong></p>
+<h2>工具参数也是片段</h2>
+<figure class="code"><figcaption>text</figcaption><pre class="shiki vitesse-dark" style="background-color:#121212;color:#dbd7caee" tabindex="0"><code><span class="line"><span>      事件 ToolCallInputDelta  "{"pat"（累计 5 字符）</span></span>
+<span class="line"><span>      事件 ToolCallInputDelta  "h":"s"（累计 10 字符）</span></span>
+<span class="line"><span>      ...</span></span>
+<span class="line"><span>      事件 OutputItemDone      工具调用 read_file  参数={"path":"src/parseDate.ts"}</span></span></code></pre></figure><p>工具参数是一串 JSON 文本，被切成碎片发过来，得按 <code>item_id</code> 拼起来才能 <code>JSON.parse</code>。</p>
+<p>这里 Codex 和 DSH 有个小差别，值得一提：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Codex</th>
+<th>DSH</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>用什么标识一个调用</td>
+<td><code>item_id</code> + <code>call_id</code></td>
+<td><code>index</code></td>
+</tr>
+<tr>
+<td>文本</td>
+<td><code>OutputTextDelta(String)</code>，无下标</td>
+<td><code>{ index, text }</code></td>
+</tr>
+</tbody></table>
+<p>Codex 用 id——<strong>因为一条响应里可能并行产生多个工具调用</strong>，用序号容易串。DSH 用 index，因为它的 chunk 携带了块的下标，语义上等价于&quot;第几个块&quot;。</p>
+<p>两种都能work，但 id 在并行场景下更难写错。</p>
+<h2><code>end_turn</code> 可能不存在</h2>
+<p>这是我在这一步最有收获的地方。</p>
+<p><code>Completed</code> 事件里带一个 <code>end_turn: Option&lt;bool&gt;</code>。而源码注释写着：</p>
+<blockquote>
+<p>Did the model affirmatively end its turn? <strong>Some providers do not set this</strong>, so we rely on fallback logic when it is <code>None</code>.</p>
+</blockquote>
+<p>也就是说：<strong>&quot;模型说完了没有&quot;这个判断，不能依赖服务端一定会告诉你。</strong></p>
+<p><code>step6.mjs</code> 的第三个场景专门跑这个：</p>
+<figure class="code"><figcaption>text</figcaption><pre class="shiki vitesse-dark" style="background-color:#121212;color:#dbd7caee" tabindex="0"><code><span class="line"><span>      事件 Completed           end_turn=（服务端没给）</span></span>
+<span class="line"><span>      兜底：服务端未提供 end_turn，且没有工具调用 → 判定为完成</span></span>
+<span class="line"><span>  needs_follow_up = false（走兜底逻辑）</span></span></code></pre></figure><p>兜底规则很简单：<strong>如果服务端没表态，而且这一轮没有产生工具调用，那就当作说完了。</strong></p>
+<p>这个规则为什么成立？因为如果模型要调工具，它必然产生一个 <code>function_call</code> item。没有工具调用又没有明确的&quot;还没完&quot;信号，继续问下去也只是得到同样的回答。</p>
+<p>真实的工程代码里到处是这种**&quot;信息可能缺失，但我得给个说法&quot;**的地方。它们不会出现在架构图里，只会出现在注释里。</p>
+<h2>三种判定的优先级</h2>
+<p>把 <code>step6.mjs</code> 里的判断逻辑抽出来，顺序是这样的：</p>
+<ol>
+<li><strong>有工具调用</strong> → 必须继续（工具结果得送回去）</li>
+<li><strong>服务端明说了 <code>end_turn</code></strong> → 听它的</li>
+<li><strong>服务端没说，也没有工具调用</strong> → 判定完成</li>
+</ol>
+<p>第一条优先级最高，因为它是一个<strong>事实</strong>——模型确实产生了一个还没被满足的调用。而 <code>end_turn</code> 是个<strong>声明</strong>，声明可能缺失，也可能有别的解释。</p>
+<p><strong>先信事实，再信声明，都没有才走兜底。</strong></p>
+<hr>
+<p>下次再看到&quot;流式响应&quot;，先问一句：这条流里除了答案还在传什么？那些不构成答案的事件，往往才是这个系统真正在意的状态。</p>
 
 </section></article>
 </main>
